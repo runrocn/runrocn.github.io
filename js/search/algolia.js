@@ -1,239 +1,440 @@
-let SearchService = (() => {
-  const fn = {};
-  let search, algolia, timerId;
-  fn.queryText = null;
-  fn.template = `<div id="u-search">
-  <div class="modal">
-    <header class="modal-header" class="clearfix">
-      <button type="submit" id="u-search-modal-btn-submit" class="u-search-btn-submit">
-        <span class="fa-solid fa-search"></span>
-      </button>
-      <div id="algolia-search-input"></div>
-      <a id="u-search-btn-close" class="btn-close"> <span class="fa-solid fa-times"></span> </a>
-    </header>
-    <main class="modal-body">
-      <div id="algolia-search-results">
-        <div id="algolia-hits">
-          <div class="search-icon"><i class="fa-sharp fa-solid fa-telescope"></i></i></div>
-        </div>
-      </div>
-    </main>
-    <footer>
-      <div id="algolia-pagination"></div>
-      <hr>
-      <div id="algolia-info">
-        <div class="algolia-stats"></div>
-        <div class="algolia-poweredBy"></div>
-      </div>
-    </footer>
-  </div>
-  <div id="modal-overlay" class="modal-overlay"></div>
-  </div>
-  `;
-
-  fn.init = () => {
-    let div = document.createElement("div");
-    div.innerHTML += fn.template;
-    document.body.append(div);
-
-    algolia = volantis.GLOBAL_CONFIG.search;
-    if (algolia.appId && algolia.apiKey && algolia.indexName) {
-      fn.event();
-      fn.setAlgolia();
-    } else {
-      document.querySelector('#u-search main.modal-body').innerHTML = 'Algolia setting is invalid!';
-      document.querySelector('#u-search main.modal-body').style.textAlign = 'center';
-      document.querySelector('#u-search .modal').style.maxHeight = '128px';
+class AlgoliaSearch {
+    constructor() {
+        this.searchInstance = null;
+        this.isInitialized = false;
+        
+        // DOM 元素缓存
+        this.elements = this.cacheElements();
+        
+        // Algolia 配置
+        this.config = GLOBAL_CONFIG.algolia;
+        
+        // 初始化
+        this.init();
     }
-  }
 
-  fn.event = () => {
-    document
-      .querySelector("#u-search-btn-close")
-      .addEventListener("click", fn.close, false);
-    document
-      .querySelector("#modal-overlay")
-      .addEventListener("click", fn.close, false);
-    document.querySelectorAll(".u-search-form").forEach((e) => {
-      e.addEventListener("submit", fn.onSubmit, false);
-    });
-    document.querySelector("#algolia-search-input").addEventListener("input", event => {
-      let input = event.target.querySelector(".ais-SearchBox-input");
-      if (input) {
-        fn.queryText = input.value;
-      } else {
-        fn.queryText = event.target.value;
-      }
-    })
-  }
+    /**
+     * 缓存常用的DOM元素
+     */
+    cacheElements() {
+        return {
+            searchMask: document.getElementById("search-mask"),
+            searchDialog: document.querySelector("#algolia-search .search-dialog"),
+            searchButton: document.querySelector("#search-button > .search"),
+            closeButton: document.querySelector("#algolia-search .search-close-button"),
+            menuSearch: document.getElementById("menu-search"),
+            hitsContainer: document.getElementById("algolia-hits"),
+            inputContainer: "#algolia-search-input",
+            paginationContainer: "#algolia-pagination",
+            statsContainer: "#algolia-tips > #algolia-stats"
+        };
+    }
 
-  fn.setAlgolia = () => {
-    search = instantsearch({
-      indexName: algolia.indexName,
-      searchClient: algoliasearch(algolia.appId, algolia.apiKey),
-      searchFunction(helper) {
-        helper.state.query && helper.search()
-      },
-    })
+    /**
+     * 初始化搜索功能
+     */
+    init() {
+        try {
+            if (!this.validateConfig()) {
+                console.error("Algolia configuration is invalid!");
+                return;
+            }
 
-    const configure = instantsearch.widgets.configure({
-      hitsPerPage: algolia.hitsPerPage
-    })
-
-    const searchBox = instantsearch.widgets.searchBox({
-      container: '#algolia-search-input',
-      autofocus: true,
-      showReset: false,
-      showSubmit: false,
-      showLoadingIndicator: false,
-      searchAsYouType: algolia.searchAsYouType,
-      placeholder: algolia.placeholder,
-      templates: {
-        input: 'algolia-input'
-      },
-      queryHook(query, refine) {
-        clearTimeout(timerId)
-        timerId = setTimeout(() => refine(query), 500)
-      }
-    })
-
-    const hits = instantsearch.widgets.hits({
-      container: '#algolia-hits',
-      templates: {
-        item(data) {
-          const keyword = !!fn.queryText ? `?keyword=${fn.queryText}` : ''
-          const link = data.permalink ? data.permalink : `${volantis.GLOBAL_CONFIG.root}${data.path}`
-          const result = data._highlightResult
-          const content = result.contentStripTruncate
-            ? fn.cutContent(result.contentStripTruncate.value)
-            : result.contentStrip
-              ? fn.cutContent(result.contentStrip.value)
-              : result.content
-                ? fn.cutContent(result.content.value)
-                : ''
-          return `
-            <a href="${link}${keyword}" class="result">
-            <span class="title">${result.title.value || 'no-title'}</span>
-            <span class="digest">${content}</span>
-            </a>`
-        },
-        empty: function (data) {
-          return (
-            `<div id="resule-hits-empty"><i class="fa-solid fa-box-open"></i><p>${volantis.GLOBAL_CONFIG.languages.search.hits_empty.replace(/\$\{query}/, data.query)}</p></div>`
-          )
+            this.setupSearchInstance();
+            this.bindEvents();
+            this.bindKeyboardShortcuts();
+            
+            this.isInitialized = true;
+        } catch (error) {
+            console.error('Algolia search initialization failed:', error);
         }
-      }
-    })
+    }
 
-    const stats = instantsearch.widgets.stats({
-      container: '#algolia-info > .algolia-stats',
-      templates: {
-        text: function (data) {
-          const stats = volantis.GLOBAL_CONFIG.languages.search.hits_stats
-            .replace(/\$\{hits}/, data.nbHits)
-            .replace(/\$\{time}/, data.processingTimeMS)
-          return (
-            `${stats}`
-          )
+    /**
+     * 验证 Algolia 配置
+     */
+    validateConfig() {
+        return this.config && 
+               this.config.appId && 
+               this.config.apiKey && 
+               this.config.indexName;
+    }
+
+    /**
+     * 设置搜索实例
+     */
+    setupSearchInstance() {
+        this.searchInstance = instantsearch({
+            indexName: this.config.indexName,
+            searchClient: algoliasearch.algoliasearch(this.config.appId, this.config.apiKey),
+            searchFunction: (helper) => this.handleSearch(helper)
+        });
+
+        this.addWidgets();
+        this.searchInstance.start();
+    }
+
+    /**
+     * 处理搜索逻辑
+     */
+    handleSearch(helper) {
+        if (helper.state.query) {
+            this.showLoading();
+            helper.search();
+        } else {
+            this.clearResults();
         }
-      }
-    })
-
-    const powerBy = instantsearch.widgets.poweredBy({
-      container: '#algolia-info > .algolia-poweredBy',
-      theme: volantis.dark?.mode === 'dark' ? 'dark' : 'light'
-    })
-
-    const pagination = instantsearch.widgets.pagination({
-      container: '#algolia-pagination',
-      totalPages: 5,
-      templates: {
-        first: '<i class="fas fa-angle-double-left"></i>',
-        last: '<i class="fas fa-angle-double-right"></i>',
-        previous: '<i class="fas fa-angle-left"></i>',
-        next: '<i class="fas fa-angle-right"></i>'
-      }
-    })
-
-    search.addWidgets([configure, searchBox, hits, stats, powerBy, pagination])
-
-    search.start()
-
-    window.pjax && search.on('render', () => {
-      window.pjax.refresh(document.getElementById('algolia-hits'))
-    })
-  }
-
-  fn.setQueryText = queryText => {
-    fn.queryText = queryText;
-    if (!search) {
-      fn.init()
-    }
-    search?.setUiState({
-      [algolia.indexName]: {
-        query: queryText
-      }
-    })
-  }
-
-  fn.search = () => {
-    document.querySelector("#u-search").style.display = "block";
-    document.addEventListener("keydown", event => {
-      if (event.code === "Escape") {
-        fn.close();
-      }
-    }, { once: true })
-  }
-
-  fn.onSubmit = (event) => {
-    event.preventDefault();
-    let input = event.target.querySelector(".u-search-input");
-    fn.setQueryText(input?.value ? input.value : event.target.value)
-    fn.search();
-  };
-
-  fn.cutContent = content => {
-    if (content === '') return ''
-
-    const firstOccur = content.indexOf('<mark>')
-
-    let start = firstOccur - 30
-    let end = firstOccur + 120
-    let pre = ''
-    let post = ''
-
-    if (start <= 0) {
-      start = 0
-      end = 140
-    } else {
-      pre = '...'
     }
 
-    if (end > content.length) {
-      end = content.length
-    } else {
-      post = '...'
+    /**
+     * 显示加载状态
+     */
+    showLoading() {
+        if (this.elements.hitsContainer) {
+            const loadingHtml = `<div class="loading">${GLOBAL_CONFIG.lang?.search?.loading || 'Searching...'}</div>`;
+            this.elements.hitsContainer.innerHTML = loadingHtml;
+        }
     }
 
-    let matchContent = pre + content.substring(start, end) + post
-    return matchContent
-  }
+    /**
+     * 清空搜索结果
+     */
+    clearResults() {
+        if (this.elements.hitsContainer) {
+            this.elements.hitsContainer.innerHTML = '';
+        }
+    }
 
-  fn.close = () => {
-    document.querySelector("#u-search").style.display = "none";
-  };
+    /**
+     * 添加搜索组件
+     */
+    addWidgets() {
+        const widgets = [
+            this.createConfigureWidget(),
+            this.createSearchBoxWidget(),
+            this.createStatsWidget(),
+            this.createHitsWidget(),
+            this.createPaginationWidget()
+        ];
 
-  return {
-    init: fn.init,
-    setQueryText: queryText => {
-      fn.setQueryText(queryText);
-    },
-    search: fn.search,
-    close: fn.close
-  }
-})()
+        this.searchInstance.addWidgets(widgets);
+    }
 
-Object.freeze(SearchService);
+    /**
+     * 创建配置组件
+     */
+    createConfigureWidget() {
+        return instantsearch.widgets.configure({
+            hitsPerPage: this.config.hits?.per_page || 5,
+        });
+    }
 
-SearchService.init();
-document.addEventListener("pjax:send", SearchService.close);
+    /**
+     * 创建搜索框组件
+     */
+    createSearchBoxWidget() {
+        return instantsearch.widgets.searchBox({
+            container: this.elements.inputContainer,
+            showReset: false,
+            showSubmit: false,
+            placeholder: GLOBAL_CONFIG.lang?.search?.placeholder || 'Search by keywords',
+            showLoadingIndicator: false,
+            searchAsYouType: true,
+        });
+    }
+
+    /**
+     * 创建统计组件
+     */
+    createStatsWidget() {
+        return instantsearch.widgets.stats({
+            container: this.elements.statsContainer,
+            templates: {
+                text: (data) => this.formatStatsText(data)
+            },
+        });
+    }
+
+    /**
+     * 格式化统计文本
+     */
+    formatStatsText(data) {
+        const statsText = GLOBAL_CONFIG.lang?.search?.hit
+            ?.replace(/\$\{hits}/, data.nbHits)
+            ?.replace(/\$\{time}/, data.processingTimeMS) || 
+            `Found ${data.nbHits} results, took ${data.processingTimeMS} ms`;
+        
+        return `<hr>${statsText}`;
+    }
+
+    /**
+     * 创建结果组件
+     */
+    createHitsWidget() {
+        return instantsearch.widgets.hits({
+            container: "#algolia-hits",
+            templates: {
+                item: (data) => this.renderHitItem(data),
+                empty: (data) => this.renderEmptyState(data)
+            },
+            cssClasses: {
+                item: "algolia-hit-item",
+            },
+        });
+    }
+
+    /**
+     * 渲染搜索结果项
+     */
+    renderHitItem(data) {
+        try {
+            const link = data.permalink || (GLOBAL_CONFIG.root + data.path);
+            const result = data._highlightResult;
+            
+            // 隐藏加载状态
+            this.hideLoadingIndicator();
+            
+            // 延迟聚焦搜索框
+            this.delayedFocus();
+            
+            return `
+                <a href="${this.escapeHtml(link)}" class="algolia-hit-item-link">
+                    <span class="algolia-hits-item-title">${result.title?.value || "无标题"}</span>
+                </a>`;
+        } catch (error) {
+            console.error('Failed to render search result item:', error);
+            return '<div class="algolia-hit-error">Failed to render</div>';
+        }
+    }
+
+    /**
+     * 渲染空状态
+     */
+    renderEmptyState(data) {
+        this.hideLoadingIndicator();
+        this.delayedFocus();
+        
+        const emptyText = GLOBAL_CONFIG.lang?.search?.empty?.replace(/\$\{query}/, data.query) || 
+                         `No results found for "${data.query}"`;
+        
+        return `<div id="algolia-hits-empty">${emptyText}</div>`;
+    }
+
+    /**
+     * 隐藏加载指示器
+     */
+    hideLoadingIndicator() {
+        const loadingElement = document.querySelector("#algolia-hits .loading");
+        if (loadingElement) {
+            loadingElement.style.display = "none";
+        }
+    }
+
+    /**
+     * 延迟聚焦搜索框
+     */
+    delayedFocus() {
+        setTimeout(() => {
+            const searchInput = document.querySelector("#algolia-search .ais-SearchBox-input");
+            searchInput?.focus();
+        }, 200);
+    }
+
+    /**
+     * 转义HTML
+     */
+    escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+
+    /**
+     * 创建分页组件
+     */
+    createPaginationWidget() {
+        return instantsearch.widgets.pagination({
+            container: this.elements.paginationContainer,
+            totalPages: this.config.hits?.per_page ?? 5,
+            scrollTo: false,
+            showFirstLast: false,
+            templates: {
+                first: '<i class="solitude fas fa-angles-left"></i>',
+                last: '<i class="solitude fas fa-angles-right"></i>',
+                previous: '<i class="solitude fas fa-angle-left"></i>',
+                next: '<i class="solitude fas fa-angle-right"></i>',
+            },
+            cssClasses: {
+                root: "pagination",
+                item: "pagination-item",
+                link: "page-number",
+                active: "current",
+                disabled: "disabled-item",
+            },
+        });
+    }
+
+    /**
+     * 绑定事件监听器
+     */
+    bindEvents() {
+        // 基础搜索事件
+        this.bindSearchEvents();
+        
+        // 右键菜单搜索
+        this.bindRightMenuSearch();
+        
+        // PJAX 兼容性
+        this.bindPjaxEvents();
+    }
+
+    /**
+     * 绑定搜索相关事件
+     */
+    bindSearchEvents() {
+        // 搜索按钮
+        if (this.elements.searchButton) {
+            utils.addEventListenerPjax(this.elements.searchButton, "click", () => this.openSearch());
+        }
+
+        // 关闭按钮和遮罩
+        if (this.elements.closeButton) {
+            this.elements.closeButton.addEventListener("click", () => this.closeSearch());
+        }
+        
+        if (this.elements.searchMask) {
+            this.elements.searchMask.addEventListener("click", () => this.closeSearch());
+        }
+    }
+
+    /**
+     * 绑定右键菜单搜索
+     */
+    bindRightMenuSearch() {
+        if (GLOBAL_CONFIG.right_menu && this.elements.menuSearch) {
+            this.elements.menuSearch.addEventListener("click", () => {
+                rm.hideRightMenu();
+                this.openSearch();
+                
+                // 设置选中文本
+                if (window.selectTextNow) {
+                    const searchInput = document.querySelector('.ais-SearchBox-input');
+                    if (searchInput) {
+                        searchInput.value = window.selectTextNow;
+                        const event = new Event('input', { bubbles: true });
+                        searchInput.dispatchEvent(event);
+                    }
+                }
+            });
+        }
+    }
+
+    /**
+     * 绑定 PJAX 事件
+     */
+    bindPjaxEvents() {
+        window.addEventListener("pjax:complete", () => {
+            if (!utils.isHidden(this.elements.searchMask)) {
+                this.closeSearch();
+            }
+            
+            // 重新缓存元素并绑定事件
+            this.elements = this.cacheElements();
+            this.bindSearchEvents();
+        });
+
+        // PJAX 刷新搜索结果
+        if (window.pjax && this.searchInstance) {
+            this.searchInstance.on("render", () => {
+                const hitsElement = document.getElementById("algolia-hits");
+                if (hitsElement) {
+                    window.pjax.refresh(hitsElement);
+                }
+            });
+        }
+    }
+
+    /**
+     * 绑定键盘快捷键
+     */
+    bindKeyboardShortcuts() {
+        document.addEventListener("keydown", (event) => {
+            // Ctrl+K 打开搜索
+            if (event.ctrlKey && event.key === "k") {
+                event.preventDefault();
+                this.openSearch();
+                return;
+            }
+
+            // ESC 关闭搜索
+            if (event.code === "Escape" && this.isSearchOpen()) {
+                this.closeSearch();
+            }
+        });
+    }
+
+    /**
+     * 打开搜索框
+     */
+    openSearch() {
+        if (!this.elements.searchMask || !this.elements.searchDialog) return;
+
+        utils.animateIn(this.elements.searchMask, "to_show 0.5s");
+        this.elements.searchDialog.style.display = "flex";
+        
+        // 延迟聚焦以确保动画完成
+        setTimeout(() => {
+            const searchInput = document.querySelector("#algolia-search .ais-SearchBox-input");
+            searchInput?.focus();
+        }, 100);
+
+        this.fixSafariHeight();
+        window.addEventListener("resize", this.fixSafariHeight);
+        
+        // 暴露到全局作用域以保持兼容性
+        window.openSearch = () => this.openSearch();
+    }
+
+    /**
+     * 关闭搜索框
+     */
+    closeSearch() {
+        if (!this.elements.searchMask || !this.elements.searchDialog) return;
+
+        utils.animateOut(this.elements.searchDialog, "search_close .5s");
+        utils.animateOut(this.elements.searchMask, "to_hide 0.5s");
+        window.removeEventListener("resize", this.fixSafariHeight);
+    }
+
+    /**
+     * 检查搜索框是否打开
+     */
+    isSearchOpen() {
+        return this.elements.searchDialog?.style.display === "flex";
+    }
+
+    /**
+     * 修复Safari高度问题
+     */
+    fixSafariHeight = () => {
+        if (window.innerWidth < 768 && this.elements.searchDialog) {
+            this.elements.searchDialog.style.setProperty("--search-height", `${window.innerHeight}px`);
+        }
+    };
+
+    /**
+     * 销毁搜索实例
+     */
+    destroy() {
+        if (this.searchInstance) {
+            this.searchInstance.dispose();
+            this.searchInstance = null;
+        }
+        this.isInitialized = false;
+    }
+}
+
+// DOM 加载完成后初始化搜索功能
+document.addEventListener("DOMContentLoaded", () => {
+    window.algoliaSearch = new AlgoliaSearch();
+});
